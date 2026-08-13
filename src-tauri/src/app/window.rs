@@ -7,6 +7,10 @@ use crate::util::{
 use dispatch::Queue;
 #[cfg(target_os = "windows")]
 use std::{os::windows::ffi::OsStrExt, ptr, sync::OnceLock};
+#[cfg(target_os = "windows")]
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_13, ICoreWebView2Profile7};
+#[cfg(target_os = "windows")]
+use windows::core::{Interface, PCWSTR};
 use std::{
     path::PathBuf,
     str::FromStr,
@@ -54,6 +58,11 @@ fn bundled_browser_extension_path(app: &AppHandle) -> Option<PathBuf> {
         .join("manifest.json")
         .is_file()
         .then_some(extension_dir)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn should_defer_youtube_startup(extension_available: bool, url_type: &str) -> bool {
+    extension_available && url_type == "web"
 }
 
 #[cfg(target_os = "windows")]
@@ -404,6 +413,26 @@ fn build_window(
 
     let user_agent = config.user_agent.get();
 
+    #[cfg(target_os = "windows")]
+    let youtube_extension_path = bundled_browser_extension_path(app);
+
+    #[cfg(target_os = "windows")]
+    let youtube_target_url =
+        should_defer_youtube_startup(youtube_extension_path.is_some(), &window_config.url_type)
+            .then(|| match &url {
+                WebviewUrl::External(target) => Some(target.clone()),
+                _ => Url::parse(&window_config.url).ok(),
+            })
+            .flatten();
+
+    #[cfg(target_os = "windows")]
+    let initial_url = youtube_target_url.as_ref().map_or(url, |_| {
+        WebviewUrl::External(Url::parse("about:blank").expect("about:blank must be valid"))
+    });
+
+    #[cfg(not(target_os = "windows"))]
+    let initial_url = url;
+
     let config_script = format!(
         "window.pakeConfig = {}",
         serde_json::to_string(&window_config).unwrap_or_else(|_| "{}".to_string())
@@ -418,7 +447,7 @@ fn build_window(
         }
     });
 
-    let mut window_builder = WebviewWindowBuilder::new(app, label, url)
+    let mut window_builder = WebviewWindowBuilder::new(app, label, initial_url)
         .title(effective_title)
         .visible(visible)
         .user_agent(user_agent)
@@ -426,14 +455,10 @@ fn build_window(
         .maximized(window_config.maximize);
 
     #[cfg(target_os = "windows")]
-    let youtube_bundle = if let Some(extension_path) = bundled_browser_extension_path(app) {
-        window_builder = window_builder
-            .browser_extensions_enabled(true)
-            .extensions_path(extension_path);
-        true
-    } else {
-        false
-    };
+    let youtube_bundle = youtube_extension_path.is_some();
+    if youtube_bundle {
+        window_builder = window_builder.browser_extensions_enabled(true);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -716,8 +741,9 @@ fn build_window(
 
     #[cfg(target_os = "windows")]
     {
-        window_builder = window_builder
-            .on_navigation(move |url| !youtube_bundle || is_youtube_app_navigation(url));
+        window_builder = window_builder.on_navigation(move |url| {
+            !youtube_bundle || is_youtube_app_navigation(url)
+        });
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -726,6 +752,11 @@ fn build_window(
     }
 
     let window = window_builder.build()?;
+
+    #[cfg(target_os = "windows")]
+    if let (Some(extension_path), Some(target_url)) = (youtube_extension_path, youtube_target_url) {
+        configure_youtube_extension(&window, extension_path, target_url);
+    }
 
     // macOS WKWebView ignores the Chromium --ignore-certificate-errors flag, so
     // install a host-scoped delegate on the process-lifetime main window only.
@@ -754,6 +785,103 @@ fn build_window(
     }
 
     Ok(window)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_youtube_extension(window: &WebviewWindow, extension_path: PathBuf, target_url: Url) {
+    use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
+
+    let target = target_url.to_string();
+    let path = extension_path.to_string_lossy().to_string();
+    let callback_window = window.clone();
+    let result = window.with_webview(move |webview| {
+        let controller = webview.controller();
+        let Ok(core) = (unsafe { controller.CoreWebView2() }) else {
+            show_youtube_extension_error(&callback_window, "WebView2 core is unavailable.");
+            return;
+        };
+        let Ok(core13) = core.cast::<ICoreWebView2_13>() else {
+            show_youtube_extension_error(
+                &callback_window,
+                "WebView2 Runtime 120 or newer is required.",
+            );
+            return;
+        };
+        let Ok(profile) = (unsafe { core13.Profile() }) else {
+            show_youtube_extension_error(&callback_window, "WebView2 profile is unavailable.");
+            return;
+        };
+        let Ok(profile7) = profile.cast::<ICoreWebView2Profile7>() else {
+            show_youtube_extension_error(
+                &callback_window,
+                "WebView2 Runtime 120 or newer is required.",
+            );
+            return;
+        };
+        let extension_path: Vec<u16> = std::ffi::OsStr::new(&path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let callback_window = callback_window.clone();
+        let target = target.clone();
+        let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(
+            move |error_code, _extension| {
+                if error_code.is_ok() {
+                    match Url::parse(&target) {
+                        Ok(url) => {
+                            if let Err(error) = callback_window.navigate(url) {
+                                eprintln!(
+                                    "[Pake] Failed to navigate after loading Adblock: {error}"
+                                );
+                                show_youtube_extension_error(
+                                    &callback_window,
+                                    "Adblock loaded, but YouTube could not be opened.",
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("[Pake] Invalid deferred YouTube URL: {error}");
+                            show_youtube_extension_error(
+                                &callback_window,
+                                "Adblock loaded, but the YouTube URL is invalid.",
+                            );
+                        }
+                    }
+                } else {
+                    show_youtube_extension_error(
+                        &callback_window,
+                        "Adblock could not be loaded. YouTube was not opened.",
+                    );
+                }
+                Ok(())
+            },
+        ));
+        if let Err(error) =
+            unsafe { profile7.AddBrowserExtension(PCWSTR(extension_path.as_ptr()), &handler) }
+        {
+            show_youtube_extension_error(
+                &callback_window,
+                &format!("Adblock could not be loaded: {error}"),
+            );
+        }
+    });
+    if let Err(error) = result {
+        eprintln!("[Pake] Failed to access WebView2 while loading Adblock: {error}");
+        show_youtube_extension_error(window, "Adblock could not be loaded. YouTube was not opened.");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_youtube_extension_error(window: &WebviewWindow, message: &str) {
+    let message = serde_json::to_string(message).unwrap_or_else(|_| {
+        "\"Adblock could not be loaded. YouTube was not opened.\"".to_string()
+    });
+    let script = format!(
+        "document.body.replaceChildren();const main=document.createElement('main');main.style.cssText='font:16px sans-serif;padding:32px';const heading=document.createElement('h1');heading.textContent='YouTube protection unavailable';const detail=document.createElement('p');detail.textContent={message};main.append(heading,detail);document.body.append(main);"
+    );
+    if let Err(error) = window.eval(&script) {
+        eprintln!("[Pake] Failed to render Adblock error page: {error}");
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -800,9 +928,7 @@ mod youtube_navigation_tests {
 
     #[test]
     fn allows_youtube_hosts_and_short_links() {
-        assert!(is_youtube_app_navigation(&parse(
-            "https://www.youtube.com/"
-        )));
+        assert!(is_youtube_app_navigation(&parse("https://www.youtube.com/")));
         assert!(is_youtube_app_navigation(&parse(
             "https://music.youtube.com/watch?v=abc"
         )));
@@ -825,4 +951,12 @@ mod youtube_navigation_tests {
         assert!(is_youtube_app_navigation(&parse("about:blank")));
         assert!(!is_youtube_app_navigation(&parse("about:srcdoc")));
     }
+
+    #[test]
+    fn defers_web_navigation_only_when_extension_is_available() {
+        assert!(should_defer_youtube_startup(true, "web"));
+        assert!(!should_defer_youtube_startup(false, "web"));
+        assert!(!should_defer_youtube_startup(true, "local"));
+    }
 }
+
