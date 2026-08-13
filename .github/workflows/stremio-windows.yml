@@ -1,0 +1,111 @@
+name: Build Stremio for Windows
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: App version
+        required: false
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Node.js environment
+        uses: ./.github/actions/setup-env
+        with:
+          mode: build
+
+      - name: Build CLI
+        run: pnpm run cli:build
+
+      - name: Restore Rust cache
+        uses: actions/cache/restore@v4.2.0
+        id: cache_store
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-cargo-pake-stremio-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Stremio MSI
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node dist/cli.js "https://web.stremio.com/" `
+            --name "Stremio" `
+            --width "1280" `
+            --height "800" `
+            --min-width "900" `
+            --min-height "600" `
+            --app-version "${{ inputs.app_version }}" `
+            --wasm `
+            --internal-url-regex "^https://web\.stremio\.com([/:].*)?$"
+
+      - name: Verify Stremio MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msiPath = (Resolve-Path "Stremio.msi").Path
+          if ((Get-Item -LiteralPath $msiPath).Length -le 0) {
+            throw "Stremio.msi is empty."
+          }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP "stremio-msi"
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+          $arguments = "/a `"$msiPath`" /qn TARGETDIR=`"$extractDir`""
+          $process = Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Failed to extract MSI. msiexec exited with code $($process.ExitCode)."
+          }
+
+          $appExecutables = @(Get-ChildItem -LiteralPath $extractDir -Filter "pake-stremio.exe" -File -Recurse)
+          if ($appExecutables.Count -ne 1) {
+            throw "Expected one pake-stremio.exe in extracted MSI, found $($appExecutables.Count)."
+          }
+
+          $expectedVersion = "${{ inputs.app_version }}"
+          $actualVersion = $appExecutables[0].VersionInfo.ProductVersion
+          if ($actualVersion -ne $expectedVersion -and $actualVersion -ne "$expectedVersion.0") {
+            throw "ProductVersion mismatch. Expected $expectedVersion, got $actualVersion."
+          }
+          Write-Host "Verified Stremio MSI, ProductVersion $actualVersion, and one executable."
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: Stremio-Windows
+          path: Stremio.msi
+          retention-days: 3
+
+      - name: Save Rust cache
+        uses: actions/cache/save@v4.2.0
+        if: always() && steps.cache_store.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-cargo-pake-stremio-${{ hashFiles('**/Cargo.lock') }}
