@@ -716,9 +716,8 @@ fn build_window(
 
     #[cfg(target_os = "windows")]
     {
-        window_builder = window_builder.on_navigation(move |url| {
-            !youtube_bundle || is_youtube_app_navigation(url)
-        });
+        window_builder = window_builder
+            .on_navigation(move |url| !youtube_bundle || is_youtube_app_navigation(url));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -801,7 +800,9 @@ mod youtube_navigation_tests {
 
     #[test]
     fn allows_youtube_hosts_and_short_links() {
-        assert!(is_youtube_app_navigation(&parse("https://www.youtube.com/")));
+        assert!(is_youtube_app_navigation(&parse(
+            "https://www.youtube.com/"
+        )));
         assert!(is_youtube_app_navigation(&parse(
             "https://music.youtube.com/watch?v=abc"
         )));
