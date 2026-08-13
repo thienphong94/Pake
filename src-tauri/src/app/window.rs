@@ -7,6 +7,10 @@ use crate::util::{
 use dispatch::Queue;
 #[cfg(target_os = "windows")]
 use std::{os::windows::ffi::OsStrExt, ptr, sync::OnceLock};
+#[cfg(target_os = "windows")]
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_13, ICoreWebView2Profile7};
+#[cfg(target_os = "windows")]
+use windows::core::{Interface, PCWSTR};
 use std::{
     path::PathBuf,
     str::FromStr,
@@ -16,10 +20,6 @@ use tauri::{
     webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse},
     AppHandle, Config, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
-#[cfg(target_os = "windows")]
-use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
-#[cfg(target_os = "windows")]
-use windows::core::{Interface, PCWSTR};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::{
@@ -741,8 +741,9 @@ fn build_window(
 
     #[cfg(target_os = "windows")]
     {
-        window_builder = window_builder
-            .on_navigation(move |url| !youtube_bundle || is_youtube_app_navigation(url));
+        window_builder = window_builder.on_navigation(move |url| {
+            !youtube_bundle || is_youtube_app_navigation(url)
+        });
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -821,19 +822,19 @@ fn configure_youtube_extension(window: &WebviewWindow, extension_path: PathBuf, 
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let callback_window = callback_window.clone();
+        let completion_window = callback_window.clone();
         let target = target.clone();
         let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(
             move |error_code, _extension| {
                 if error_code.is_ok() {
                     match Url::parse(&target) {
                         Ok(url) => {
-                            if let Err(error) = callback_window.navigate(url) {
+                            if let Err(error) = completion_window.navigate(url) {
                                 eprintln!(
                                     "[Pake] Failed to navigate after loading Adblock: {error}"
                                 );
                                 show_youtube_extension_error(
-                                    &callback_window,
+                                    &completion_window,
                                     "Adblock loaded, but YouTube could not be opened.",
                                 );
                             }
@@ -841,14 +842,14 @@ fn configure_youtube_extension(window: &WebviewWindow, extension_path: PathBuf, 
                         Err(error) => {
                             eprintln!("[Pake] Invalid deferred YouTube URL: {error}");
                             show_youtube_extension_error(
-                                &callback_window,
+                                &completion_window,
                                 "Adblock loaded, but the YouTube URL is invalid.",
                             );
                         }
                     }
                 } else {
                     show_youtube_extension_error(
-                        &callback_window,
+                        &completion_window,
                         "Adblock could not be loaded. YouTube was not opened.",
                     );
                 }
@@ -866,17 +867,15 @@ fn configure_youtube_extension(window: &WebviewWindow, extension_path: PathBuf, 
     });
     if let Err(error) = result {
         eprintln!("[Pake] Failed to access WebView2 while loading Adblock: {error}");
-        show_youtube_extension_error(
-            window,
-            "Adblock could not be loaded. YouTube was not opened.",
-        );
+        show_youtube_extension_error(window, "Adblock could not be loaded. YouTube was not opened.");
     }
 }
 
 #[cfg(target_os = "windows")]
 fn show_youtube_extension_error(window: &WebviewWindow, message: &str) {
-    let message = serde_json::to_string(message)
-        .unwrap_or_else(|_| "\"Adblock could not be loaded. YouTube was not opened.\"".to_string());
+    let message = serde_json::to_string(message).unwrap_or_else(|_| {
+        "\"Adblock could not be loaded. YouTube was not opened.\"".to_string()
+    });
     let script = format!(
         "document.body.replaceChildren();const main=document.createElement('main');main.style.cssText='font:16px sans-serif;padding:32px';const heading=document.createElement('h1');heading.textContent='YouTube protection unavailable';const detail=document.createElement('p');detail.textContent={message};main.append(heading,detail);document.body.append(main);"
     );
@@ -929,9 +928,7 @@ mod youtube_navigation_tests {
 
     #[test]
     fn allows_youtube_hosts_and_short_links() {
-        assert!(is_youtube_app_navigation(&parse(
-            "https://www.youtube.com/"
-        )));
+        assert!(is_youtube_app_navigation(&parse("https://www.youtube.com/")));
         assert!(is_youtube_app_navigation(&parse(
             "https://music.youtube.com/watch?v=abc"
         )));
@@ -962,3 +959,4 @@ mod youtube_navigation_tests {
         assert!(!should_defer_youtube_startup(true, "local"));
     }
 }
+
