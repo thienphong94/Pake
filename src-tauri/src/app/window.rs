@@ -28,6 +28,34 @@ use tauri::Theme;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 
+#[cfg(any(target_os = "windows", test))]
+fn is_youtube_app_navigation(url: &Url) -> bool {
+    match url.scheme() {
+        "about" => url.as_str() == "about:blank",
+        "http" | "https" => url.host_str().is_some_and(|host| {
+            host == "youtube.com"
+                || host.ends_with(".youtube.com")
+                || host == "youtu.be"
+                || host.ends_with(".youtu.be")
+        }),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn bundled_browser_extension_path(app: &AppHandle) -> Option<PathBuf> {
+    let extension_dir = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("extensions/browser-extension");
+
+    extension_dir
+        .join("manifest.json")
+        .is_file()
+        .then_some(extension_dir)
+}
+
 #[cfg(target_os = "windows")]
 fn build_proxy_browser_arg(url: &Url) -> Option<String> {
     let host = url.host_str()?;
@@ -398,6 +426,16 @@ fn build_window(
         .maximized(window_config.maximize);
 
     #[cfg(target_os = "windows")]
+    let youtube_bundle = if let Some(extension_path) = bundled_browser_extension_path(app) {
+        window_builder = window_builder
+            .browser_extensions_enabled(true)
+            .extensions_path(extension_path);
+        true
+    } else {
+        false
+    };
+
+    #[cfg(target_os = "windows")]
     {
         let scale_factor = app
             .primary_monitor()
@@ -676,7 +714,17 @@ fn build_window(
         });
     }
 
-    window_builder = window_builder.on_navigation(|_| true);
+    #[cfg(target_os = "windows")]
+    {
+        window_builder = window_builder.on_navigation(move |url| {
+            !youtube_bundle || is_youtube_app_navigation(url)
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        window_builder = window_builder.on_navigation(|_| true);
+    }
 
     let window = window_builder.build()?;
 
@@ -740,5 +788,40 @@ mod proxy_arg_tests {
         // https proxies fall back to platform proxy_url; we only emit a CLI arg
         // for http/socks5 today.
         assert!(build_proxy_browser_arg(&parse("https://proxy.local:8443")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod youtube_navigation_tests {
+    use super::*;
+
+    fn parse(url: &str) -> Url {
+        Url::from_str(url).unwrap()
+    }
+
+    #[test]
+    fn allows_youtube_hosts_and_short_links() {
+        assert!(is_youtube_app_navigation(&parse("https://www.youtube.com/")));
+        assert!(is_youtube_app_navigation(&parse(
+            "https://music.youtube.com/watch?v=abc"
+        )));
+        assert!(is_youtube_app_navigation(&parse("https://youtu.be/abc")));
+    }
+
+    #[test]
+    fn rejects_lookalikes_and_external_hosts() {
+        assert!(!is_youtube_app_navigation(&parse(
+            "https://youtube.com.evil.test/"
+        )));
+        assert!(!is_youtube_app_navigation(&parse(
+            "https://accounts.google.com/"
+        )));
+        assert!(!is_youtube_app_navigation(&parse("https://example.com/")));
+    }
+
+    #[test]
+    fn only_allows_the_blank_about_page() {
+        assert!(is_youtube_app_navigation(&parse("about:blank")));
+        assert!(!is_youtube_app_navigation(&parse("about:srcdoc")));
     }
 }

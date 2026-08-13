@@ -1,4 +1,3 @@
-
 !dist/.gitkeep
 !dist/about_pake.html
 !dist/cli.js
@@ -40,6 +39,7 @@ pnpm-debug.log*
 src-tauri/.cargo/
 src-tauri/.cargo/config.toml
 src-tauri/.pake/
+src-tauri/extensions/
 src-tauri/gen
 yarn-debug.log*
 yarn-error.log*

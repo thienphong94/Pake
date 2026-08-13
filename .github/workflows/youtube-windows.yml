@@ -1,0 +1,149 @@
+name: Build YouTube for Windows
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+  EXTENSION_ID: "cmedhionkhpnakcndndgjdbohmhepckk"
+  EXTENSION_VERSION: "7.2.5"
+  EXTENSION_SHA256: "cf98bc60fce6b530d8fc86b23f5f602f816b60b972e290f40590e870fa5b80f5"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: App version
+        required: false
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Node.js environment
+        uses: ./.github/actions/setup-env
+        with:
+          mode: build
+
+      - name: Download and verify Adblock for Youtube
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $extensionDir = Join-Path $env:GITHUB_WORKSPACE "src-tauri/extensions/browser-extension"
+          $crxPath = Join-Path $env:RUNNER_TEMP "adblock-for-youtube.crx"
+          $zipPath = Join-Path $env:RUNNER_TEMP "adblock-for-youtube.zip"
+          $downloadUrl = "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=140.0.0.0&acceptformat=crx2,crx3&x=id%3D$env:EXTENSION_ID%26uc"
+
+          curl.exe -L --fail --retry 3 --output $crxPath $downloadUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download extension from Google."
+          }
+
+          $actualHash = (Get-FileHash $crxPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:EXTENSION_SHA256) {
+            throw "Extension SHA-256 mismatch. Expected $env:EXTENSION_SHA256, got $actualHash."
+          }
+
+          $bytes = [System.IO.File]::ReadAllBytes($crxPath)
+          if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne "Cr24") {
+            throw "Downloaded file is not a CRX package."
+          }
+          $crxVersion = [System.BitConverter]::ToUInt32($bytes, 4)
+          if ($crxVersion -ne 3) {
+            throw "Expected CRX3, got CRX$crxVersion."
+          }
+          $headerSize = [System.BitConverter]::ToUInt32($bytes, 8)
+          $zipOffset = 12 + $headerSize
+          if ($zipOffset -ge $bytes.Length) {
+            throw "CRX header is invalid."
+          }
+
+          [System.IO.File]::WriteAllBytes($zipPath, $bytes[$zipOffset..($bytes.Length - 1)])
+          New-Item -ItemType Directory -Path $extensionDir -Force | Out-Null
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extensionDir -Force
+
+          $manifestPath = Join-Path $extensionDir "manifest.json"
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          if ($manifest.manifest_version -ne 3) {
+            throw "Expected Manifest V3 extension."
+          }
+          if ($manifest.version -ne $env:EXTENSION_VERSION) {
+            throw "Extension version mismatch. Expected $env:EXTENSION_VERSION, got $($manifest.version)."
+          }
+
+          $keyBytes = [System.Convert]::FromBase64String($manifest.key)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $keyHash = $sha256.ComputeHash($keyBytes)
+          } finally {
+            $sha256.Dispose()
+          }
+          $extensionId = -join (($keyHash[0..15] | ForEach-Object { $_.ToString("x2") }).ToCharArray() | ForEach-Object {
+            [char]([int][char]'a' + [Convert]::ToInt32($_.ToString(), 16))
+          })
+          if ($extensionId -ne $env:EXTENSION_ID) {
+            throw "Extension ID mismatch. Expected $env:EXTENSION_ID, got $extensionId."
+          }
+
+          $configPath = Join-Path $env:GITHUB_WORKSPACE "src-tauri/tauri.windows.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.bundle.resources = @($config.bundle.resources) + "extensions/browser-extension"
+          $config | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $configPath
+
+      - name: Build CLI
+        run: pnpm run cli:build
+
+      - name: Restore Rust cache
+        uses: actions/cache/restore@v4.2.0
+        id: cache_store
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-cargo-pake-youtube-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build YouTube MSI
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          node dist/cli.js "https://www.youtube.com/" `
+            --name "YouTube" `
+            --width "1280" `
+            --height "800" `
+            --min-width "900" `
+            --min-height "600" `
+            --app-version "${{ inputs.app_version }}" `
+            --internal-url-regex "^https://([a-z0-9-]+\.)?(youtube\.com|youtu\.be)([/:].*)?$" `
+            --inject "assets/youtube-nonstop.js"
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: YouTube-Windows
+          path: YouTube.msi
+          retention-days: 3
+
+      - name: Save Rust cache
+        uses: actions/cache/save@v4.2.0
+        if: always() && steps.cache_store.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-cargo-pake-youtube-${{ hashFiles('**/Cargo.lock') }}
