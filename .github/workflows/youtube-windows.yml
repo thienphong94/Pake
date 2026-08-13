@@ -142,8 +142,13 @@ jobs:
             throw "Failed to extract MSI. msiexec exited with code $($process.ExitCode)."
           }
 
+          $appExecutable = @(Get-ChildItem -LiteralPath $extractDir -Filter "pake-youtube.exe" -File -Recurse)
+          if ($appExecutable.Count -ne 1) {
+            throw "Expected one pake-youtube.exe in extracted MSI, found $($appExecutable.Count)."
+          }
+          $extensionDir = Join-Path $appExecutable[0].Directory.FullName "extensions\browser-extension"
           foreach ($requiredFile in @("manifest.json", "background.js", "contentscript.js")) {
-            $requiredPath = Join-Path $extractDir "extensions\browser-extension\$requiredFile"
+            $requiredPath = Join-Path $extensionDir $requiredFile
             if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
               throw "MSI is missing required Adblock file at: $requiredPath"
             }
