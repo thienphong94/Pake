@@ -71,6 +71,29 @@ jobs:
             throw "Stremio.msi is empty."
           }
 
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.GetType().InvokeMember(
+            "OpenDatabase",
+            "InvokeMethod",
+            $null,
+            $installer,
+            @($msiPath, 0)
+          )
+          $view = $database.GetType().InvokeMember(
+            "OpenView",
+            "InvokeMethod",
+            $null,
+            $database,
+            @("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'")
+          )
+          $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
+          $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+          $actualVersion = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, 1)
+          $expectedVersion = "${{ inputs.app_version }}"
+          if ($actualVersion -ne $expectedVersion) {
+            throw "MSI ProductVersion mismatch. Expected $expectedVersion, got $actualVersion."
+          }
+
           $extractDir = Join-Path $env:RUNNER_TEMP "stremio-msi"
           New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
           $arguments = "/a `"$msiPath`" /qn TARGETDIR=`"$extractDir`""
@@ -84,12 +107,7 @@ jobs:
             throw "Expected one pake-stremio.exe in extracted MSI, found $($appExecutables.Count)."
           }
 
-          $expectedVersion = "${{ inputs.app_version }}"
-          $actualVersion = $appExecutables[0].VersionInfo.ProductVersion
-          if ($actualVersion -ne $expectedVersion -and $actualVersion -ne "$expectedVersion.0") {
-            throw "ProductVersion mismatch. Expected $expectedVersion, got $actualVersion."
-          }
-          Write-Host "Verified Stremio MSI, ProductVersion $actualVersion, and one executable."
+          Write-Host "Verified Stremio MSI ProductVersion $actualVersion and one executable."
 
       - name: Upload MSI
         uses: actions/upload-artifact@v6
