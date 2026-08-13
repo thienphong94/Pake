@@ -644,4 +644,3 @@ export async function mergeConfig(
 
   await writeAllConfigs(tauriConf, platform);
 }
-
