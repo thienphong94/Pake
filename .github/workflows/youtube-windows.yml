@@ -129,6 +129,27 @@ jobs:
             --internal-url-regex "^https://([a-z0-9-]+\.)?(youtube\.com|youtu\.be)([/:].*)?$" `
             --inject "assets/youtube-nonstop.js"
 
+      - name: Verify Adblock files in MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msiPath = (Resolve-Path "YouTube.msi").Path
+          $extractDir = Join-Path $env:RUNNER_TEMP "youtube-msi"
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+          $arguments = "/a `"$msiPath`" /qn TARGETDIR=`"$extractDir`""
+          $process = Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Failed to extract MSI. msiexec exited with code $($process.ExitCode)."
+          }
+
+          foreach ($requiredFile in @("manifest.json", "background.js", "contentscript.js")) {
+            $requiredPath = Join-Path $extractDir "extensions\browser-extension\$requiredFile"
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+              throw "MSI is missing required Adblock file at: $requiredPath"
+            }
+          }
+          Write-Host "Verified Adblock files under extensions\browser-extension in MSI."
+
       - name: Upload MSI
         uses: actions/upload-artifact@v6
         with:
@@ -147,3 +168,4 @@ jobs:
             ~/.cargo/git/db/
             src-tauri/target/
           key: windows-cargo-pake-youtube-${{ hashFiles('**/Cargo.lock') }}
+

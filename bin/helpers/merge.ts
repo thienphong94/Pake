@@ -72,6 +72,13 @@ type PlatformIconInfo = {
   message: string;
 };
 
+export function appendBundleResource(
+  bundle: PakeTauriConfig['bundle'],
+  resource: string,
+): void {
+  bundle.resources = [...new Set([...(bundle.resources ?? []), resource])];
+}
+
 function asSupportedPlatform(platform: NodeJS.Platform): SupportedPlatform {
   if (platform !== 'win32' && platform !== 'darwin' && platform !== 'linux') {
     throw new Error(
@@ -213,14 +220,14 @@ export async function handleLocalFile(
         },
       );
     }
-    logger.info(`✺ Packaging local directory: ${url}`);
+    logger.info(`âœº Packaging local directory: ${url}`);
     await stageLocalTree(url);
     tauriConf.pake.windows[0].url = entryFile;
     tauriConf.pake.windows[0].url_type = 'local';
     return;
   }
 
-  logger.info(`✺ Packaging local file: ${url}`);
+  logger.info(`âœº Packaging local file: ${url}`);
 
   const fileName = path.basename(url);
   const distDir = path.join(npmDirectory, 'dist');
@@ -310,7 +317,7 @@ async function mergeLinuxConfig(
     tauriConf.bundle.targets = bundleTargets;
   } else {
     logger.warn(
-      `✼ The target must be one of ${LINUX_TARGET_TYPES.join(', ')}, the default 'deb' will be used.`,
+      `âœ¼ The target must be one of ${LINUX_TARGET_TYPES.join(', ')}, the default 'deb' will be used.`,
     );
   }
 }
@@ -329,15 +336,15 @@ export async function resolveSystemTrayIconPath(
     const iconExt = path.extname(systemTrayIcon).toLowerCase();
     if (iconExt !== '.png' && iconExt !== '.ico') {
       logger.warn(
-        `✼ System tray icon must be .ico or .png, but you provided ${iconExt}.`,
+        `âœ¼ System tray icon must be .ico or .png, but you provided ${iconExt}.`,
       );
-      logger.warn(`✼ Default system tray icon will be used.`);
+      logger.warn(`âœ¼ Default system tray icon will be used.`);
       return defaultTrayIconPath;
     }
 
     if (!(await fsExtra.pathExists(systemTrayIcon))) {
-      logger.warn(`✼ System tray icon "${systemTrayIcon}" was not found.`);
-      logger.warn(`✼ Default system tray icon will be used.`);
+      logger.warn(`âœ¼ System tray icon "${systemTrayIcon}" was not found.`);
+      logger.warn(`âœ¼ Default system tray icon will be used.`);
       return defaultTrayIconPath;
     }
 
@@ -347,9 +354,9 @@ export async function resolveSystemTrayIconPath(
     return trayIconPath;
   } catch (err) {
     logger.warn(
-      `✼ Failed to apply system tray icon "${systemTrayIcon}": ${err instanceof Error ? err.message : String(err)}`,
+      `âœ¼ Failed to apply system tray icon "${systemTrayIcon}": ${err instanceof Error ? err.message : String(err)}`,
     );
-    logger.warn(`✼ Default system tray icon will remain unchanged.`);
+    logger.warn(`âœ¼ Default system tray icon will remain unchanged.`);
     return defaultTrayIconPath;
   }
 }
@@ -393,11 +400,11 @@ async function mergeIcons(
 
     if (customIconExt !== iconInfo.fileExt) {
       updateIconPath = false;
-      logger.warn(`✼ ${iconInfo.message}, but you give ${customIconExt}`);
+      logger.warn(`âœ¼ ${iconInfo.message}, but you give ${customIconExt}`);
       tauriConf.bundle.icon = [iconInfo.defaultIcon];
     } else {
       const iconPath = path.join(npmDirectory, 'src-tauri/', iconInfo.path);
-      tauriConf.bundle.resources = [iconInfo.path];
+      appendBundleResource(tauriConf.bundle, iconInfo.path);
 
       const absoluteDestPath = path.resolve(iconPath);
       if (resolvedIconPath !== absoluteDestPath) {
@@ -421,11 +428,11 @@ async function mergeIcons(
     if (updateIconPath) {
       tauriConf.bundle.icon = [iconInfo.path];
     } else {
-      logger.warn(`✼ Icon will remain as default.`);
+      logger.warn(`âœ¼ Icon will remain as default.`);
     }
   } else {
     logger.warn(
-      '✼ Custom icon path may be invalid, default icon will be used instead.',
+      'âœ¼ Custom icon path may be invalid, default icon will be used instead.',
     );
     tauriConf.bundle.icon = [iconInfo.defaultIcon];
   }
@@ -570,12 +577,12 @@ export async function mergeConfig(
   const platform = asSupportedPlatform(process.platform);
   if (options.hideTitleBar && platform !== 'darwin') {
     logger.warn(
-      '✼ --hide-title-bar is only supported on macOS and will be ignored on this platform.',
+      'âœ¼ --hide-title-bar is only supported on macOS and will be ignored on this platform.',
     );
   }
   if (options.hideWindowDecorations && platform === 'darwin') {
     logger.warn(
-      '✼ --hide-window-decorations is only supported on Windows and Linux and will be ignored on this platform.',
+      'âœ¼ --hide-window-decorations is only supported on Windows and Linux and will be ignored on this platform.',
     );
   }
   const tauriConfWindowOptions = buildWindowConfigOverrides(options, platform);
@@ -637,3 +644,4 @@ export async function mergeConfig(
 
   await writeAllConfigs(tauriConf, platform);
 }
+
