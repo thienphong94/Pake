@@ -6,7 +6,7 @@ use crate::util::{
 #[cfg(target_os = "macos")]
 use dispatch::Queue;
 #[cfg(target_os = "windows")]
-use std::{os::windows::ffi::OsStrExt, ptr, sync::OnceLock};
+use std::{os::windows::ffi::OsStrExt, ptr, sync::{Once, OnceLock}};
 use std::{
     path::PathBuf,
     str::FromStr,
@@ -24,7 +24,7 @@ use windows::core::{Interface, PCWSTR};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::{
     Shell::ExtractIconExW,
-    WindowsAndMessaging::{SendMessageW, ICON_BIG, WM_SETICON},
+        WindowsAndMessaging::{SendMessageW, ICON_BIG, WM_SETICON, EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowTextW, GetWindowTextLengthW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW},
 };
 
 use tauri::Theme;
@@ -193,6 +193,71 @@ struct WindowBuildOptions<'a> {
     visible: bool,
     new_window_features: Option<NewWindowFeatures>,
 }
+
+#[cfg(target_os = "windows")]
+fn webview2_indicator_window(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    let title_length = unsafe { GetWindowTextLengthW(hwnd) };
+    let mut title_buffer = vec![0u16; title_length.max(0) as usize + 1];
+    let title_length = unsafe {
+        GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32)
+    };
+    let title = String::from_utf16_lossy(&title_buffer[..title_length.max(0) as usize]);
+    let mut class_buffer = vec![0u16; 256];
+    let class_length = unsafe {
+        GetClassNameW(hwnd, class_buffer.as_mut_ptr(), class_buffer.len() as i32)
+    };
+    let class = String::from_utf16_lossy(&class_buffer[..class_length.max(0) as usize]);
+    let title = title.to_ascii_lowercase();
+    let class = class.to_ascii_lowercase();
+
+    title == "webview2"
+        || title.contains("microsoft edge webview2")
+        || (class == "chrome_widgetwin_1" && title.contains("screen sharing"))
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn hide_webview2_indicator(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    _: isize,
+) -> i32 {
+    if !webview2_indicator_window(hwnd) {
+        return 1;
+    }
+
+    let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if style & WS_EX_APPWINDOW as isize == 0 && style & WS_EX_TOOLWINDOW as isize != 0 {
+        return 1;
+    }
+
+    SetWindowLongPtrW(
+        hwnd,
+        GWL_EXSTYLE,
+        (style & !(WS_EX_APPWINDOW as isize)) | WS_EX_TOOLWINDOW as isize,
+    );
+    SetWindowPos(
+        hwnd,
+        std::ptr::null_mut(),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
+    1
+}
+
+#[cfg(target_os = "windows")]
+fn start_webview2_taskbar_filter() {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(|| {
+        // ponytail: global 500ms scan; use WinEventHook if this becomes measurable.
+        std::thread::spawn(|| loop {
+            unsafe { EnumWindows(Some(hide_webview2_indicator), 0); }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+    });
+}
+
 
 fn open_requested_window(
     app: &AppHandle,
@@ -751,6 +816,10 @@ fn build_window(
     }
 
     let window = window_builder.build()?;
+    
+    #[cfg(target_os = "windows")]
+    start_webview2_taskbar_filter();
+
 
     #[cfg(target_os = "windows")]
     if let (Some(extension_path), Some(target_url)) = (youtube_extension_path, youtube_target_url) {
