@@ -217,7 +217,7 @@ fn webview2_indicator_window(hwnd: windows_sys::Win32::Foundation::HWND) -> bool
     let title = title.to_ascii_lowercase();
     let class = class.to_ascii_lowercase();
 
-        title == "webview2"
+    title == "webview2"
         || title.contains("microsoft edge webview2")
         || title.contains("is sharing a window")
         || title.contains("screen sharing")
