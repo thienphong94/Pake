@@ -6,7 +6,11 @@ use crate::util::{
 #[cfg(target_os = "macos")]
 use dispatch::Queue;
 #[cfg(target_os = "windows")]
-use std::{os::windows::ffi::OsStrExt, ptr, sync::{Once, OnceLock}};
+use std::{
+    os::windows::ffi::OsStrExt,
+    ptr,
+    sync::{Once, OnceLock},
+};
 use std::{
     path::PathBuf,
     str::FromStr,
@@ -24,7 +28,12 @@ use windows::core::{Interface, PCWSTR};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::{
     Shell::ExtractIconExW,
-        WindowsAndMessaging::{SendMessageW, ICON_BIG, WM_SETICON, EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowTextW, GetWindowTextLengthW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW},
+    WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+        SendMessageW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, ICON_BIG, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_SETICON, WS_EX_APPWINDOW,
+        WS_EX_TOOLWINDOW,
+    },
 };
 
 use tauri::Theme;
@@ -198,14 +207,12 @@ struct WindowBuildOptions<'a> {
 fn webview2_indicator_window(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
     let title_length = unsafe { GetWindowTextLengthW(hwnd) };
     let mut title_buffer = vec![0u16; title_length.max(0) as usize + 1];
-    let title_length = unsafe {
-        GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32)
-    };
+    let title_length =
+        unsafe { GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32) };
     let title = String::from_utf16_lossy(&title_buffer[..title_length.max(0) as usize]);
     let mut class_buffer = vec![0u16; 256];
-    let class_length = unsafe {
-        GetClassNameW(hwnd, class_buffer.as_mut_ptr(), class_buffer.len() as i32)
-    };
+    let class_length =
+        unsafe { GetClassNameW(hwnd, class_buffer.as_mut_ptr(), class_buffer.len() as i32) };
     let class = String::from_utf16_lossy(&class_buffer[..class_length.max(0) as usize]);
     let title = title.to_ascii_lowercase();
     let class = class.to_ascii_lowercase();
@@ -252,12 +259,13 @@ fn start_webview2_taskbar_filter() {
     STARTED.call_once(|| {
         // ponytail: global 500ms scan; use WinEventHook if this becomes measurable.
         std::thread::spawn(|| loop {
-            unsafe { EnumWindows(Some(hide_webview2_indicator), 0); }
+            unsafe {
+                EnumWindows(Some(hide_webview2_indicator), 0);
+            }
             std::thread::sleep(std::time::Duration::from_millis(500));
         });
     });
 }
-
 
 fn open_requested_window(
     app: &AppHandle,
@@ -816,10 +824,9 @@ fn build_window(
     }
 
     let window = window_builder.build()?;
-    
+
     #[cfg(target_os = "windows")]
     start_webview2_taskbar_filter();
-
 
     #[cfg(target_os = "windows")]
     if let (Some(extension_path), Some(target_url)) = (youtube_extension_path, youtube_target_url) {
