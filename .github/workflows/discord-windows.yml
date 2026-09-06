@@ -1,0 +1,84 @@
+name: Build Discord for Windows
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: App version
+        required: false
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Node.js environment
+        uses: ./.github/actions/setup-env
+        with:
+          mode: build
+
+      - name: Build CLI
+        run: pnpm run cli:build
+
+      - name: Restore Rust cache
+        uses: actions/cache/restore@v4.2.0
+        id: cache_store
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-cargo-pake-discord-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Discord MSI
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node dist/cli.js "https://discord.com/app" --name "Discord" --width "1280" --height "800" --min-width "900" --min-height "600" --app-version "${{ inputs.app_version }}"
+
+      - name: Verify Discord MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msiPath = (Resolve-Path "Discord.msi").Path
+          if ((Get-Item -LiteralPath $msiPath).Length -le 0) {
+            throw "Discord.msi is empty."
+          }
+          Write-Host "Verified Discord.msi ($((Get-Item -LiteralPath $msiPath).Length) bytes)."
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: Discord-Windows
+          path: Discord.msi
+          retention-days: 3
+
+      - name: Save Rust cache
+        uses: actions/cache/save@v4.2.0
+        if: always() && steps.cache_store.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-cargo-pake-discord-${{ hashFiles('**/Cargo.lock') }}
